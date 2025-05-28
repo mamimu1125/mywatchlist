@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Plus, Heart, Trash2, Edit2, X, Film, Tv, Star, Clock } from 'lucide-react';
+import { Search, Plus, Heart, Trash2, Edit2, X, Film, Tv, Star, Clock, Shield, Lock } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -22,8 +22,8 @@ function App() {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [selectedGenre, setSelectedGenre] = useState('all'); // ジャンルタブ
-  const [sortBy, setSortBy] = useState('added'); // added, rating, favorite
+  const [selectedGenre, setSelectedGenre] = useState('all');
+  const [sortBy, setSortBy] = useState('added');
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
@@ -31,6 +31,9 @@ function App() {
   const [user, setUser] = useState(null);
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
+  
+  // 管理者権限チェック用のstate
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Firebase設定
   const firebaseConfig = {
@@ -82,9 +85,12 @@ function App() {
         onAuthStateChanged(authentication, (user) => {
           if (user) {
             setUser(user);
+            // 管理者権限チェック
+            setIsAdmin(user.email === ADMIN_EMAIL);
             loadData(firestore);
           } else {
             setUser(null);
+            setIsAdmin(false);
             loadData(firestore); // 未ログインでも閲覧可能
           }
         });
@@ -172,14 +178,13 @@ function App() {
       }
 
       const data = await response.json();
-      console.log('TMDb API Response:', data); // デバッグ用
+      console.log('TMDb API Response:', data);
       
-      // 結果をフィルタリングして映画とTVのみ返す
       const filteredResults = (data.results || []).filter(item => 
         item.media_type === 'movie' || item.media_type === 'tv'
       );
       
-      return filteredResults.slice(0, 10); // 最大10件
+      return filteredResults.slice(0, 10);
     } catch (error) {
       console.error('TMDb API error:', error);
       return mockSearchResults(query);
@@ -221,15 +226,15 @@ function App() {
   };
 
   const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
+    if (!searchQuery.trim() || !isAdmin) return;
     
     setIsLoading(true);
     setShowSearchResults(false);
     
     try {
-      console.log('Searching for:', searchQuery); // デバッグ用
+      console.log('Searching for:', searchQuery);
       const results = await searchTMDbContent(searchQuery);
-      console.log('Search results:', results); // デバッグ用
+      console.log('Search results:', results);
       
       setSearchResults(results);
       setShowSearchResults(true);
@@ -242,6 +247,8 @@ function App() {
   };
 
   const selectFromSearch = (result) => {
+    if (!isAdmin) return;
+    
     const isMovie = result.media_type === 'movie';
     const posterUrl = result.poster_path 
       ? `https://image.tmdb.org/t/p/w500${result.poster_path}` 
@@ -256,7 +263,6 @@ function App() {
       releaseDate: result.release_date || result.first_air_date,
       genres: getGenreName(result.genre_ids),
       poster: posterUrl,
-      // TMDb APIから追加情報
       tmdbRating: result.vote_average || 0,
       tmdbVoteCount: result.vote_count || 0,
       runtime: result.runtime || null,
@@ -268,7 +274,6 @@ function App() {
 
   // フィルタリング＆ソート
   const filteredAndSortedItems = (() => {
-    // フィルタリング
     const filtered = items.filter(item => {
       const matchesSearch = item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            item.overview.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -278,23 +283,18 @@ function App() {
       return matchesSearch && matchesCategory && matchesGenre;
     });
 
-    // ソート
     const sorted = [...filtered].sort((a, b) => {
       switch (sortBy) {
         case 'rating':
-          // 評価順（高い順、0は最後）
           if (a.rating === 0 && b.rating === 0) return 0;
           if (a.rating === 0) return 1;
           if (b.rating === 0) return -1;
           return b.rating - a.rating;
         case 'favorite':
-          // お気に入り順（お気に入り → 通常）
           if (a.favorite && !b.favorite) return -1;
           if (!a.favorite && b.favorite) return 1;
-          // お気に入り同士、または通常同士の場合は評価順
           return b.rating - a.rating;
         case 'year':
-          // 年代順（新しい順）
           const yearA = a.releaseDate ? new Date(a.releaseDate).getFullYear() : 0;
           const yearB = b.releaseDate ? new Date(b.releaseDate).getFullYear() : 0;
           if (yearA === 0 && yearB === 0) return 0;
@@ -302,14 +302,12 @@ function App() {
           if (yearB === 0) return -1;
           return yearB - yearA;
         case 'tmdb':
-          // TMDb評価順（高い順、0は最後）
           if (a.tmdbRating === 0 && b.tmdbRating === 0) return 0;
           if (a.tmdbRating === 0) return 1;
           if (b.tmdbRating === 0) return -1;
           return b.tmdbRating - a.tmdbRating;
         case 'added':
         default:
-          // 追加順（新しい順）
           return new Date(b.addedDate) - new Date(a.addedDate);
       }
     });
@@ -317,40 +315,42 @@ function App() {
     return sorted;
   })();
 
-  // 作品追加
+  // 作品追加（管理者のみ）
   const handleAddItem = async () => {
-    if (newItem.title && db) {
-      try {
-        await addDoc(collection(db, 'watchlist'), {
-          ...newItem,
-          addedDate: new Date().toISOString()
-        });
-        loadData(db);
-        resetForm();
-      } catch (error) {
-        console.error('作品追加エラー:', error);
-        alert('作品の追加に失敗しました');
-      }
+    if (!isAdmin || !newItem.title || !db) return;
+    
+    try {
+      await addDoc(collection(db, 'watchlist'), {
+        ...newItem,
+        addedDate: new Date().toISOString()
+      });
+      loadData(db);
+      resetForm();
+    } catch (error) {
+      console.error('作品追加エラー:', error);
+      alert('作品の追加に失敗しました');
     }
   };
 
-  // 作品更新
+  // 作品更新（管理者のみ）
   const handleUpdateItem = async () => {
-    if (editingId && db) {
-      try {
-        await updateDoc(doc(db, 'watchlist', editingId), newItem);
-        loadData(db);
-        resetForm();
-      } catch (error) {
-        console.error('作品更新エラー:', error);
-        alert('作品の更新に失敗しました');
-      }
+    if (!isAdmin || !editingId || !db) return;
+    
+    try {
+      await updateDoc(doc(db, 'watchlist', editingId), newItem);
+      loadData(db);
+      resetForm();
+    } catch (error) {
+      console.error('作品更新エラー:', error);
+      alert('作品の更新に失敗しました');
     }
   };
 
-  // 作品削除
+  // 作品削除（管理者のみ）
   const handleDeleteItem = async (id) => {
-    if (db && window.confirm('この作品を削除しますか？')) {
+    if (!isAdmin || !db) return;
+    
+    if (window.confirm('この作品を削除しますか？')) {
       try {
         await deleteDoc(doc(db, 'watchlist', id));
         loadData(db);
@@ -385,8 +385,10 @@ function App() {
     setSearchQuery('');
   };
 
-  // お気に入り切り替え
+  // お気に入り切り替え（管理者のみ）
   const toggleFavorite = async (id) => {
+    if (!isAdmin) return;
+    
     const item = items.find(v => v.id === id);
     if (item && db) {
       try {
@@ -398,20 +400,22 @@ function App() {
     }
   };
 
-  // ステータス変更
+  // ステータス変更（管理者のみ）
   const changeStatus = async (id, status) => {
-    if (db) {
-      try {
-        await updateDoc(doc(db, 'watchlist', id), { status });
-        loadData(db);
-      } catch (error) {
-        console.error('ステータス更新エラー:', error);
-      }
+    if (!isAdmin || !db) return;
+    
+    try {
+      await updateDoc(doc(db, 'watchlist', id), { status });
+      loadData(db);
+    } catch (error) {
+      console.error('ステータス更新エラー:', error);
     }
   };
 
-  // 編集開始
+  // 編集開始（管理者のみ）
   const handleEditItem = (id) => {
+    if (!isAdmin) return;
+    
     const item = items.find(i => i.id === id);
     if (item) {
       setNewItem(item);
@@ -437,9 +441,9 @@ function App() {
           <button
             key={star}
             type="button"
-            onClick={() => !readonly && onRatingChange && onRatingChange(star)}
-            className={`${readonly ? 'cursor-default' : 'cursor-pointer hover:scale-110'} transition-transform`}
-            disabled={readonly}
+            onClick={() => !readonly && onRatingChange && isAdmin && onRatingChange(star)}
+            className={`${readonly || !isAdmin ? 'cursor-default' : 'cursor-pointer hover:scale-110'} transition-transform`}
+            disabled={readonly || !isAdmin}
           >
             <Star 
               className={`w-5 h-5 ${
@@ -467,8 +471,10 @@ function App() {
             <div className="flex items-center gap-2">
               {user && (
                 <div className="flex items-center gap-3">
-                  <div className="text-sm text-gray-600">
-                    👑 {user.displayName || user.email}
+                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                    {isAdmin && <Shield className="w-4 h-4 text-green-600" />}
+                    <span>{isAdmin ? '👑 管理者' : '👤 ゲスト'}</span>
+                    <span>{user.displayName || user.email}</span>
                   </div>
                   <button
                     onClick={handleLogout}
@@ -484,6 +490,16 @@ function App() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6">
+        {/* 権限表示 */}
+        {!isAdmin && user && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center gap-2 text-blue-800">
+              <Lock className="w-4 h-4" />
+              <span className="text-sm">閲覧専用モードです。編集・追加機能は管理者のみ利用できます。</span>
+            </div>
+          </div>
+        )}
+
         {/* 検索バー */}
         <div className="mb-4">
           <div className="relative">
@@ -557,7 +573,7 @@ function App() {
           
           <div className="flex-1 hidden sm:block"></div>
           
-          {user && (
+          {isAdmin && (
             <button
               onClick={() => setShowAddForm(true)}
               className="flex items-center justify-center px-2 py-1 sm:px-3 sm:py-1 bg-red-600 text-white text-xs sm:text-sm rounded hover:bg-red-700 shadow-sm"
@@ -568,8 +584,8 @@ function App() {
           )}
         </div>
 
-        {/* 作品追加/編集フォーム */}
-        {showAddForm && user && (
+        {/* 作品追加/編集フォーム（管理者のみ） */}
+        {showAddForm && isAdmin && (
           <div className="mb-6 p-6 bg-white border border-gray-300 rounded-lg shadow-sm">
             <h3 className="text-lg font-semibold mb-4">
               {editingId ? '作品編集' : '作品追加'}
@@ -701,7 +717,7 @@ function App() {
                   </select>
                 </div>
 
-                <div></div> {/* 空のdiv for grid alignment */}
+                <div></div>
               </div>
 
               <div>
@@ -754,7 +770,6 @@ function App() {
         {/* 作品一覧 */}
         <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {filteredAndSortedItems.map(item => {
-            
             return (
               <div key={item.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
                 <div className="relative">
@@ -781,7 +796,6 @@ function App() {
                     <Heart className="absolute top-2 left-2 w-4 h-4 sm:w-5 sm:h-5 text-red-500 fill-current" />
                   )}
                   
-                  {/* カテゴリーマーク（画像上に表示） */}
                   <div className="absolute bottom-2 left-2 px-2 py-1 bg-black bg-opacity-70 text-white text-xs rounded flex items-center">
                     {item.type === 'movie' ? (
                       <>
@@ -800,7 +814,6 @@ function App() {
                 <div className="p-2 sm:p-3">
                   <h3 className="font-semibold text-sm sm:text-base mb-1 line-clamp-2">{item.title}</h3>
                   
-                  {/* TMDb情報 */}
                   <div className="flex items-center justify-between text-xs mb-1 sm:mb-2">
                     <div className="flex items-center gap-2 text-gray-500">
                       {item.releaseDate && (
@@ -815,7 +828,6 @@ function App() {
                     </div>
                   </div>
                   
-                  {/* 上映時間・シーズン数 */}
                   {(item.runtime || item.numberOfSeasons) && (
                     <p className="text-xs text-gray-500 mb-1 sm:mb-2">
                       {item.type === 'movie' && item.runtime ? `${item.runtime}分` : ''}
@@ -839,7 +851,7 @@ function App() {
                     </span>
                     
                     <div className="flex gap-1 sm:ml-auto">
-                      {user && (
+                      {isAdmin && (
                         <>
                           <button
                             onClick={() => toggleFavorite(item.id)}
@@ -878,7 +890,7 @@ function App() {
           <div className="text-center py-12">
             <Film className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <p className="text-gray-500 text-lg">作品が見つかりません</p>
-            {user && (
+            {isAdmin && (
               <button
                 onClick={() => setShowAddForm(true)}
                 className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
@@ -902,14 +914,14 @@ function App() {
         )}
       </div>
 
-      {/* フッター（管理者ログイン） */}
+      {/* フッター（ログインボタン） */}
       {!user && (
         <div className="fixed bottom-4 right-4">
           <button
             onClick={handleLogin}
             className="px-3 py-1 text-xs bg-gray-500 text-white rounded opacity-50 hover:opacity-100 transition-opacity"
           >
-            管理者
+            ログイン
           </button>
         </div>
       )}
@@ -945,7 +957,6 @@ function App() {
                   {selectedItem.type === 'movie' ? <Film className="w-12 h-12" /> : <Tv className="w-12 h-12" />}
                 </div>
                 <div className="flex-1">
-                  {/* 公開年・TMDb評価・上映時間 */}
                   <div className="flex flex-wrap items-center gap-3 mb-3 text-sm text-gray-500">
                     {selectedItem.releaseDate && (
                       <span>{new Date(selectedItem.releaseDate).getFullYear()}年</span>
@@ -976,7 +987,7 @@ function App() {
                   
                   {selectedItem.rating > 0 && (
                     <div className="mb-3">
-                      <div className="text-sm text-gray-600 mb-1">あなたの評価</div>
+                      <div className="text-sm text-gray-600 mb-1">評価</div>
                       <StarRating rating={selectedItem.rating} readonly />
                     </div>
                   )}
