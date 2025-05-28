@@ -785,13 +785,13 @@ function App() {
                   <div className="absolute bottom-2 left-2 px-2 py-1 bg-black bg-opacity-70 text-white text-xs rounded flex items-center">
                     {item.type === 'movie' ? (
                       <>
-                        <Film className="w-3 h-3 mr-1" />
-                        <span className="hidden sm:inline">映画</span>
+                        <Film className="w-3 h-3" />
+                        <span className="hidden sm:inline ml-1">映画</span>
                       </>
                     ) : (
                       <>
-                        <Tv className="w-3 h-3 mr-1" />
-                        <span className="hidden sm:inline">ドラマ</span>
+                        <Tv className="w-3 h-3" />
+                        <span className="hidden sm:inline ml-1">ドラマ</span>
                       </>
                     )}
                   </div>
