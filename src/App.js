@@ -25,6 +25,7 @@ function App() {
   const [selectedGenre, setSelectedGenre] = useState('all');
   const [sortBy, setSortBy] = useState('added');
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -45,9 +46,16 @@ function App() {
     appId: process.env.REACT_APP_FIREBASE_APP_ID
   };
 
-  // 管理者のメールアドレス
+  // 管理者のメールアドレス（ハッシュ化されたものと比較する方法も可能）
   const ADMIN_EMAIL = process.env.REACT_APP_ADMIN_EMAIL;
   const TMDB_API_KEY = process.env.REACT_APP_TMDB_API_KEY;
+
+  // より安全な管理者チェック（オプション）
+  const checkAdminStatus = (email) => {
+    // 実際のメールアドレスを直接比較する代わりに、
+    // ハッシュ化された値と比較することも可能
+    return email === ADMIN_EMAIL;
+  };
 
   const [newItem, setNewItem] = useState({
     title: '',
@@ -82,11 +90,22 @@ function App() {
         setAuth(authentication);
 
         // 認証状態の監視
-        onAuthStateChanged(authentication, (user) => {
+        onAuthStateChanged(authentication, async (user) => {
           if (user) {
-            setUser(user);
             // 管理者権限チェック
-            setIsAdmin(user.email === ADMIN_EMAIL);
+            const isUserAdmin = checkAdminStatus(user.email);
+            
+            if (!isUserAdmin) {
+              // 管理者以外は自動ログアウト
+              await signOut(authentication);
+              setUser(null);
+              setIsAdmin(false);
+              loadData(firestore);
+              return;
+            }
+            
+            setUser(user);
+            setIsAdmin(true);
             loadData(firestore);
           } else {
             setUser(null);
@@ -121,10 +140,16 @@ function App() {
     if (auth) {
       try {
         const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({
+          prompt: 'select_account'
+        });
         await signInWithPopup(auth, provider);
+        
       } catch (error) {
         console.error('ログインエラー:', error);
-        alert('ログインに失敗しました');
+        if (error.code !== 'auth/popup-closed-by-user') {
+          alert('ログインに失敗しました');
+        }
       }
     }
   };
@@ -471,10 +496,8 @@ function App() {
             <div className="flex items-center gap-2">
               {user && (
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2 text-sm text-gray-600">
-                    {isAdmin && <Shield className="w-4 h-4 text-green-600" />}
-                    <span>{isAdmin ? '👑 管理者' : '👤 ゲスト'}</span>
-                    <span>{user.displayName || user.email}</span>
+                  <div className="text-sm text-gray-600">
+                    {user.displayName || user.email}
                   </div>
                   <button
                     onClick={handleLogout}
@@ -500,19 +523,22 @@ function App() {
           </div>
         )}
 
-        {/* 検索バー */}
-        <div className="mb-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-            <input
-              type="text"
-              placeholder="作品を検索..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-12 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-100"
-            />
+        {/* 検索バー（折りたたみ式） */}
+        {showSearch && (
+          <div className="mb-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+              <input
+                type="text"
+                placeholder="作品を検索..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-12 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-100"
+                autoFocus
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         {/* ジャンルタブ */}
         <div className="mb-4">
@@ -548,6 +574,18 @@ function App() {
 
         {/* コンパクトフィルター */}
         <div className="mb-4 sm:mb-6 flex flex-col sm:flex-row gap-2 sm:gap-3 items-stretch sm:items-center">
+          <button
+            onClick={() => setShowSearch(!showSearch)}
+            className={`flex items-center justify-center px-2 py-1 sm:px-3 sm:py-1 text-xs sm:text-sm rounded transition-colors ${
+              showSearch 
+                ? 'bg-red-600 text-white' 
+                : 'border border-gray-300 text-gray-700 hover:border-red-500'
+            }`}
+          >
+            <Search className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
+            検索
+          </button>
+
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
@@ -914,14 +952,14 @@ function App() {
         )}
       </div>
 
-      {/* フッター（ログインボタン） */}
+      {/* フッター（管理者ログイン） */}
       {!user && (
         <div className="fixed bottom-4 right-4">
           <button
             onClick={handleLogin}
             className="px-3 py-1 text-xs bg-gray-500 text-white rounded opacity-50 hover:opacity-100 transition-opacity"
           >
-            ログイン
+            管理者ログイン
           </button>
         </div>
       )}
