@@ -834,11 +834,11 @@ function App() {
                   )}
                   
                   <div className="flex items-center justify-between">
-                    <span className="inline-block bg-gray-100 text-gray-700 text-xs px-1 sm:px-2 py-1 rounded-full">
+                    <span className="hidden sm:inline-block bg-gray-100 text-gray-700 text-xs px-1 sm:px-2 py-1 rounded-full">
                       {categories.find(c => c.id === item.category)?.name}
                     </span>
                     
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 sm:ml-auto">
                       {user && (
                         <>
                           <button
