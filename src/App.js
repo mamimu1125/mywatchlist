@@ -23,12 +23,14 @@ function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedGenre, setSelectedGenre] = useState('all');
-  const [sortBy, setSortBy] = useState('added');
+  const [selectedStarFilter, setSelectedStarFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('year');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showGenres, setShowGenres] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
@@ -71,7 +73,8 @@ function App() {
     tmdbRating: 0,
     tmdbVoteCount: 0,
     runtime: null,
-    numberOfSeasons: null
+    numberOfSeasons: null,
+    cast: []
   });
 
   const [showSearchResults, setShowSearchResults] = useState(false);
@@ -124,6 +127,7 @@ function App() {
   // Firebaseからデータ読み込み
   const loadData = async (firestore) => {
     try {
+      setIsLoading(true);
       const videosSnapshot = await getDocs(collection(firestore, 'watchlist'));
       const firebaseItems = videosSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -132,6 +136,8 @@ function App() {
       setItems(firebaseItems);
     } catch (error) {
       console.error('データ読み込みエラー:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -209,7 +215,44 @@ function App() {
         item.media_type === 'movie' || item.media_type === 'tv'
       );
       
-      return filteredResults.slice(0, 10);
+      // 各結果の詳細情報を取得（runtime等）
+      const detailedResults = await Promise.all(
+        filteredResults.slice(0, 10).map(async (item) => {
+          try {
+            const detailResponse = await fetch(
+              `https://api.themoviedb.org/3/${item.media_type}/${item.id}?api_key=${TMDB_API_KEY}&language=ja-JP`
+            );
+            
+            const creditsResponse = await fetch(
+              `https://api.themoviedb.org/3/${item.media_type}/${item.id}/credits?api_key=${TMDB_API_KEY}`
+            );
+            
+            if (detailResponse.ok && creditsResponse.ok) {
+              const detail = await detailResponse.json();
+              const credits = await creditsResponse.json();
+              
+              // 主要キャスト3名を取得
+              const mainCast = (credits.cast || []).slice(0, 3).map(actor => ({
+                name: actor.name,
+                character: actor.character,
+                profile_path: actor.profile_path
+              }));
+              
+              return {
+                ...item,
+                runtime: detail.runtime || null,
+                number_of_seasons: detail.number_of_seasons || null,
+                cast: mainCast
+              };
+            }
+          } catch (error) {
+            console.error('Detail fetch error:', error);
+          }
+          return { ...item, cast: [] };
+        })
+      );
+      
+      return detailedResults;
     } catch (error) {
       console.error('TMDb API error:', error);
       return mockSearchResults(query);
@@ -291,7 +334,8 @@ function App() {
       tmdbRating: result.vote_average || 0,
       tmdbVoteCount: result.vote_count || 0,
       runtime: result.runtime || null,
-      numberOfSeasons: result.number_of_seasons || null
+      numberOfSeasons: result.number_of_seasons || null,
+      cast: result.cast || []
     });
     setShowSearchResults(false);
     setSearchQuery('');
@@ -299,27 +343,34 @@ function App() {
 
   // フィルタリング＆ソート
   const filteredAndSortedItems = (() => {
+    // フィルタリング
     const filtered = items.filter(item => {
       const matchesSearch = item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            item.overview.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            item.comment.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = selectedCategory === 'all' || item.category === selectedCategory;
       const matchesGenre = selectedGenre === 'all' || (item.genres && item.genres.includes(selectedGenre));
-      return matchesSearch && matchesCategory && matchesGenre;
+      const matchesStarFilter = selectedStarFilter === 'all' || item.rating === selectedStarFilter;
+      return matchesSearch && matchesCategory && matchesGenre && matchesStarFilter;
     });
 
+    // ソート
     const sorted = [...filtered].sort((a, b) => {
       switch (sortBy) {
         case 'rating':
+          // 評価順（高い順、0は最後）
           if (a.rating === 0 && b.rating === 0) return 0;
           if (a.rating === 0) return 1;
           if (b.rating === 0) return -1;
           return b.rating - a.rating;
         case 'favorite':
+          // お気に入り順（お気に入り → 通常）
           if (a.favorite && !b.favorite) return -1;
           if (!a.favorite && b.favorite) return 1;
+          // お気に入り同士、または通常同士の場合は評価順
           return b.rating - a.rating;
         case 'year':
+          // 年代順（新しい順）
           const yearA = a.releaseDate ? new Date(a.releaseDate).getFullYear() : 0;
           const yearB = b.releaseDate ? new Date(b.releaseDate).getFullYear() : 0;
           if (yearA === 0 && yearB === 0) return 0;
@@ -327,12 +378,14 @@ function App() {
           if (yearB === 0) return -1;
           return yearB - yearA;
         case 'tmdb':
+          // TMDb評価順（高い順、0は最後）
           if (a.tmdbRating === 0 && b.tmdbRating === 0) return 0;
           if (a.tmdbRating === 0) return 1;
           if (b.tmdbRating === 0) return -1;
           return b.tmdbRating - a.tmdbRating;
         case 'added':
         default:
+          // 追加順（新しい順）
           return new Date(b.addedDate) - new Date(a.addedDate);
       }
     });
@@ -402,7 +455,8 @@ function App() {
       tmdbRating: 0,
       tmdbVoteCount: 0,
       runtime: null,
-      numberOfSeasons: null
+      numberOfSeasons: null,
+      cast: []
     });
     setShowAddForm(false);
     setEditingId(null);
@@ -540,86 +594,208 @@ function App() {
           </div>
         )}
 
-        {/* ジャンルタブ */}
+        {/* ジャンル・星評価（PC用横並び、スマホ用縦並び） */}
         <div className="mb-4">
-          <div className="flex flex-wrap gap-1 sm:gap-2 mb-3 sm:mb-4">
-            <button
-              onClick={() => setSelectedGenre('all')}
-              className={`px-2 py-1 sm:px-4 sm:py-2 text-xs sm:text-sm rounded-full transition-colors ${
-                selectedGenre === 'all'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-white text-gray-700 border border-gray-300 hover:border-red-500'
-              }`}
-            >
-              すべて ({items.length})
-            </button>
-            {getAvailableGenres().map(genre => {
-              const count = items.filter(item => item.genres && item.genres.includes(genre)).length;
-              return (
+          <div className="flex flex-col lg:flex-row lg:items-center lg:gap-4">
+            {/* ジャンルタブ（折りたたみ式） */}
+            <div className="mb-4 lg:mb-0">
+              <button
+                onClick={() => setShowGenres(!showGenres)}
+                className={`flex items-center gap-2 px-4 py-3 lg:px-3 lg:py-2 text-base lg:text-sm rounded-lg transition-colors ${
+                  showGenres 
+                    ? 'bg-red-600 text-white' 
+                    : 'bg-white text-gray-700 border border-gray-300 hover:border-red-500'
+                }`}
+              >
+                ジャンル ({selectedGenre === 'all' ? 'すべて' : selectedGenre})
+                <span className={`transform transition-transform ${showGenres ? 'rotate-180' : ''}`}>
+                  ▼
+                </span>
+              </button>
+              
+              {showGenres && (
+                <div className="absolute z-10 mt-2 p-3 bg-white border border-gray-200 rounded-lg shadow-lg max-w-md">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => {
+                        setSelectedGenre('all');
+                        setShowGenres(false);
+                      }}
+                      className={`px-4 py-2 text-sm rounded-full transition-colors ${
+                        selectedGenre === 'all'
+                          ? 'bg-red-600 text-white'
+                          : 'bg-gray-100 text-gray-700 hover:bg-red-100'
+                      }`}
+                    >
+                      すべて ({items.length})
+                    </button>
+                    {getAvailableGenres().map(genre => {
+                      const count = items.filter(item => item.genres && item.genres.includes(genre)).length;
+                      return (
+                        <button
+                          key={genre}
+                          onClick={() => {
+                            setSelectedGenre(genre);
+                            setShowGenres(false);
+                          }}
+                          className={`px-4 py-2 text-sm rounded-full transition-colors ${
+                            selectedGenre === genre
+                              ? 'bg-red-600 text-white'
+                              : 'bg-gray-100 text-gray-700 hover:bg-red-100'
+                          }`}
+                        >
+                          {genre} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 星評価フィルター */}
+            <div className="flex-1">
+              <div className="grid grid-cols-3 sm:flex sm:flex-wrap gap-1 sm:gap-2">
                 <button
-                  key={genre}
-                  onClick={() => setSelectedGenre(genre)}
-                  className={`px-2 py-1 sm:px-4 sm:py-2 text-xs sm:text-sm rounded-full transition-colors ${
-                    selectedGenre === genre
-                      ? 'bg-red-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-300 hover:border-red-500'
+                  onClick={() => setSelectedStarFilter('all')}
+                  className={`flex items-center justify-center gap-1 px-2 py-2 sm:px-3 sm:py-1 text-xs sm:text-sm rounded-full transition-colors ${
+                    selectedStarFilter === 'all'
+                      ? 'bg-yellow-500 text-white'
+                      : 'bg-white text-gray-700 border border-gray-300 hover:border-yellow-500'
                   }`}
                 >
-                  {genre} ({count})
+                  <Star className="w-3 h-3 fill-current" />
+                  すべて
                 </button>
-              );
-            })}
+                {[5, 4, 3, 2, 1].map(star => {
+                  return (
+                    <button
+                      key={star}
+                      onClick={() => setSelectedStarFilter(star)}
+                      className={`flex items-center justify-center gap-1 px-2 py-2 sm:px-3 sm:py-1 text-xs sm:text-sm rounded-full transition-colors ${
+                        selectedStarFilter === star
+                          ? 'bg-yellow-500 text-white'
+                          : 'bg-white text-gray-700 border border-gray-300 hover:border-yellow-500'
+                      }`}
+                    >
+                      <Star className="w-3 h-3 fill-current" />
+                      {star}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 
         {/* コンパクトフィルター */}
-        <div className="mb-4 sm:mb-6 flex flex-col sm:flex-row gap-2 sm:gap-3 items-stretch sm:items-center">
-          <button
-            onClick={() => setShowSearch(!showSearch)}
-            className={`flex items-center justify-center px-2 py-1 sm:px-3 sm:py-1 text-xs sm:text-sm rounded transition-colors ${
-              showSearch 
-                ? 'bg-red-600 text-white' 
-                : 'border border-gray-300 text-gray-700 hover:border-red-500'
-            }`}
-          >
-            <Search className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
-            検索
-          </button>
+        <div className="mb-4 sm:mb-6">
+          {/* スマホ: 検索1カラム + 選択2カラム, PC: 横並び */}
+          <div className="block sm:hidden">
+            {/* 検索ボタンは削除（下の3カラムに統合） */}
 
-          <select
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-2 py-1 sm:px-3 sm:py-1 text-xs sm:text-sm border border-gray-300 rounded focus:outline-none focus:border-red-500"
-          >
-            <option value="all">すべてのカテゴリ</option>
-            {categories.map(category => (
-              <option key={category.id} value={category.id}>{category.name}</option>
-            ))}
-          </select>
+            {/* 選択項目（2カラム → 3つを均等幅に） */}
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <button
+                onClick={() => setShowSearch(!showSearch)}
+                className={`flex items-center justify-center py-3 text-sm rounded transition-colors ${
+                  showSearch 
+                    ? 'bg-red-600 text-white' 
+                    : 'border border-gray-300 text-gray-700 hover:border-red-500'
+                }`}
+              >
+                <Search className="w-4 h-4 mr-1" />
+                検索
+              </button>
 
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-            className="px-2 py-1 sm:px-3 sm:py-1 text-xs sm:text-sm border border-gray-300 rounded focus:outline-none focus:border-red-500"
-          >
-            <option value="added">追加順</option>
-            <option value="rating">評価順</option>
-            <option value="favorite">お気に入り順</option>
-            <option value="year">年代順</option>
-            <option value="tmdb">IMDb評価順</option>
-          </select>
-          
-          <div className="flex-1 hidden sm:block"></div>
-          
-          {isAdmin && (
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="px-2 py-3 text-sm border border-gray-300 rounded focus:outline-none focus:border-red-500"
+              >
+                <option value="all">すべて</option>
+                {categories.map(category => (
+                  <option key={category.id} value={category.id}>{category.name}</option>
+                ))}
+              </select>
+
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="px-2 py-3 text-sm border border-gray-300 rounded focus:outline-none focus:border-red-500"
+              >
+                <option value="year">年代順</option>
+                <option value="added">追加順</option>
+                <option value="rating">評価順</option>
+                <option value="favorite">お気に入り順</option>
+                <option value="tmdb">IMDb評価順</option>
+              </select>
+            </div>
+          </div>
+
+          {/* PC用レイアウト */}
+          <div className="hidden sm:flex sm:flex-row sm:gap-3 sm:items-center">
             <button
-              onClick={() => setShowAddForm(true)}
-              className="flex items-center justify-center px-2 py-1 sm:px-3 sm:py-1 bg-red-600 text-white text-xs sm:text-sm rounded hover:bg-red-700 shadow-sm"
+              onClick={() => setShowSearch(!showSearch)}
+              className={`flex items-center justify-center px-3 py-1 text-xs rounded transition-colors ${
+                showSearch 
+                  ? 'bg-red-600 text-white' 
+                  : 'border border-gray-300 text-gray-700 hover:border-red-500'
+              }`}
             >
-              <Plus className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
-              作品追加
+              <Search className="w-3 h-3 mr-1" />
+              検索
             </button>
+
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="px-3 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-red-500"
+            >
+              <option value="all">すべてのカテゴリ</option>
+              {categories.map(category => (
+                <option key={category.id} value={category.id}>{category.name}</option>
+              ))}
+            </select>
+
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="px-3 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-red-500"
+            >
+              <option value="year">年代順</option>
+              <option value="added">追加順</option>
+              <option value="rating">評価順</option>
+              <option value="favorite">お気に入り順</option>
+              <option value="tmdb">IMDb評価順</option>
+            </select>
+          </div>
+          
+          {/* 作品追加ボタン（スマホでは下段、PCでは右端） */}
+          {isAdmin && (
+            <div className="sm:hidden">
+              <button
+                onClick={() => setShowAddForm(true)}
+                className="w-full flex items-center justify-center px-4 py-3 bg-red-600 text-white text-sm rounded hover:bg-red-700 shadow-sm"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                作品追加
+              </button>
+            </div>
           )}
+          
+          {/* PC用の作品追加ボタン */}
+          <div className="hidden sm:flex sm:justify-end sm:mt-3">
+            {isAdmin && (
+              <button
+                onClick={() => setShowAddForm(true)}
+                className="flex items-center justify-center px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 shadow-sm"
+              >
+                <Plus className="w-3 h-3 mr-1" />
+                作品追加
+              </button>
+            )}
+          </div>
         </div>
 
         {/* 作品追加/編集フォーム（管理者のみ） */}
@@ -806,125 +982,134 @@ function App() {
         )}
 
         {/* 作品一覧 */}
-        <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          {filteredAndSortedItems.map(item => {
-            return (
-              <div key={item.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
-                <div className="relative">
-                  {item.poster ? (
-                    <img
-                      src={item.poster}
-                      alt={item.title}
-                      className="w-full h-48 sm:h-56 lg:h-64 object-cover cursor-pointer"
+        {isLoading ? (
+          <div className="flex justify-center items-center py-20">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
+              <p className="text-gray-500">読み込み中...</p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            {filteredAndSortedItems.map(item => {
+              return (
+                <div key={item.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
+                  <div className="relative">
+                    {item.poster ? (
+                      <img
+                        src={item.poster}
+                        alt={item.title}
+                        className="w-full h-48 sm:h-56 lg:h-64 object-cover cursor-pointer"
+                        onClick={() => openItemModal(item)}
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          e.target.nextSibling.style.display = 'flex';
+                        }}
+                      />
+                    ) : null}
+                    <div 
+                      className={`w-full h-48 sm:h-56 lg:h-64 bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white cursor-pointer ${item.poster ? 'hidden' : 'flex'}`}
                       onClick={() => openItemModal(item)}
-                      onError={(e) => {
-                        e.target.style.display = 'none';
-                        e.target.nextSibling.style.display = 'flex';
-                      }}
-                    />
-                  ) : null}
-                  <div 
-                    className={`w-full h-48 sm:h-56 lg:h-64 bg-gradient-to-br from-red-400 to-red-600 flex items-center justify-center text-white cursor-pointer ${item.poster ? 'hidden' : 'flex'}`}
-                    onClick={() => openItemModal(item)}
-                  >
-                    {item.type === 'movie' ? <Film className="w-12 h-12 sm:w-14 sm:h-14" /> : <Tv className="w-12 h-12 sm:w-14 sm:h-14" />}
-                  </div>
-                  
-                  {item.favorite && (
-                    <Heart className="absolute top-2 left-2 w-4 h-4 sm:w-5 sm:h-5 text-red-500 fill-current" />
-                  )}
-                  
-                  <div className="absolute bottom-2 left-2 px-2 py-1 bg-black bg-opacity-70 text-white text-xs rounded flex items-center">
-                    {item.type === 'movie' ? (
-                      <>
-                        <Film className="w-3 h-3" />
-                        <span className="hidden sm:inline ml-1">映画</span>
-                      </>
-                    ) : (
-                      <>
-                        <Tv className="w-3 h-3" />
-                        <span className="hidden sm:inline ml-1">ドラマ</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                
-                <div className="p-2 sm:p-3">
-                  <h3 className="font-semibold text-sm sm:text-base mb-1 line-clamp-2">{item.title}</h3>
-                  
-                  <div className="flex items-center justify-between text-xs mb-1 sm:mb-2">
-                    <div className="flex items-center gap-2 text-gray-500">
-                      {item.releaseDate && (
-                        <span>{new Date(item.releaseDate).getFullYear()}</span>
-                      )}
-                      {item.tmdbRating > 0 && (
-                        <div className="flex items-center gap-1">
-                          <Star className="w-3 h-3 text-yellow-500 fill-current" />
-                          <span>{item.tmdbRating.toFixed(1)}</span>
-                        </div>
-                      )}
+                    >
+                      {item.type === 'movie' ? <Film className="w-12 h-12 sm:w-14 sm:h-14" /> : <Tv className="w-12 h-12 sm:w-14 sm:h-14" />}
                     </div>
-                  </div>
-                  
-                  {(item.runtime || item.numberOfSeasons) && (
-                    <p className="text-xs text-gray-500 mb-1 sm:mb-2">
-                      {item.type === 'movie' && item.runtime ? `${item.runtime}分` : ''}
-                      {item.type === 'tv' && item.numberOfSeasons ? `${item.numberOfSeasons}シーズン` : ''}
-                    </p>
-                  )}
-                  
-                  {item.rating > 0 && (
-                    <div className="mb-1 sm:mb-2 scale-75 sm:scale-90 origin-left">
-                      <StarRating rating={item.rating} readonly />
-                    </div>
-                  )}
-                  
-                  {item.comment && (
-                    <p className="text-gray-500 text-xs mb-1 sm:mb-2 line-clamp-2">{item.comment}</p>
-                  )}
-                  
-                  <div className="flex items-center justify-between">
-                    <span className="hidden sm:inline-block bg-gray-100 text-gray-700 text-xs px-1 sm:px-2 py-1 rounded-full">
-                      {categories.find(c => c.id === item.category)?.name}
-                    </span>
                     
-                    <div className="flex gap-1 sm:ml-auto">
-                      {isAdmin && (
+                    {item.favorite && (
+                      <Heart className="absolute top-2 left-2 w-4 h-4 sm:w-5 sm:h-5 text-red-500 fill-current" />
+                    )}
+                    
+                    <div className="absolute bottom-2 left-2 px-2 py-1 bg-black bg-opacity-70 text-white text-xs rounded flex items-center">
+                      {item.type === 'movie' ? (
                         <>
-                          <button
-                            onClick={() => toggleFavorite(item.id)}
-                            className="p-1 hover:bg-gray-100 rounded"
-                            title="お気に入り"
-                          >
-                            <Heart className={`w-3 h-3 ${item.favorite ? 'fill-current text-red-500' : 'text-gray-400'}`} />
-                          </button>
-                          
-                          <button
-                            onClick={() => handleEditItem(item.id)}
-                            className="p-1 hover:bg-gray-100 rounded"
-                            title="編集"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                          </button>
-                          
-                          <button
-                            onClick={() => handleDeleteItem(item.id)}
-                            className="p-1 hover:bg-gray-100 rounded text-red-500"
-                            title="削除"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
+                          <Film className="w-3 h-3" />
+                          <span className="hidden sm:inline ml-1">映画</span>
+                        </>
+                      ) : (
+                        <>
+                          <Tv className="w-3 h-3" />
+                          <span className="hidden sm:inline ml-1">ドラマ</span>
                         </>
                       )}
                     </div>
                   </div>
+                  
+                  <div className="p-2 sm:p-3">
+                    <h3 className="font-semibold text-sm sm:text-base mb-1 line-clamp-2">{item.title}</h3>
+                    
+                    <div className="flex items-center justify-between text-xs mb-1 sm:mb-2">
+                      <div className="flex items-center gap-2 text-gray-500">
+                        {item.releaseDate && (
+                          <span>{new Date(item.releaseDate).getFullYear()}</span>
+                        )}
+                        {item.tmdbRating > 0 && (
+                          <div className="flex items-center gap-1">
+                            <Star className="w-3 h-3 text-yellow-500 fill-current" />
+                            <span>{item.tmdbRating.toFixed(1)}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {(item.runtime || item.numberOfSeasons) && (
+                      <p className="text-xs text-gray-500 mb-1 sm:mb-2">
+                        {item.type === 'movie' && item.runtime ? `${item.runtime}分` : ''}
+                        {item.type === 'tv' && item.numberOfSeasons ? `${item.numberOfSeasons}シーズン` : ''}
+                      </p>
+                    )}
+                    
+                    {item.rating > 0 && (
+                      <div className="mb-1 sm:mb-2 scale-75 sm:scale-90 origin-left">
+                        <StarRating rating={item.rating} readonly />
+                      </div>
+                    )}
+                    
+                    {item.comment && (
+                      <p className="text-gray-500 text-xs mb-1 sm:mb-2 line-clamp-2">{item.comment}</p>
+                    )}
+                    
+                    <div className="flex items-center justify-between">
+                      <span className="hidden sm:inline-block bg-gray-100 text-gray-700 text-xs px-1 sm:px-2 py-1 rounded-full">
+                        {categories.find(c => c.id === item.category)?.name}
+                      </span>
+                      
+                      <div className="flex gap-1 sm:ml-auto">
+                        {isAdmin && (
+                          <>
+                            <button
+                              onClick={() => toggleFavorite(item.id)}
+                              className="p-1 hover:bg-gray-100 rounded"
+                              title="お気に入り"
+                            >
+                              <Heart className={`w-3 h-3 ${item.favorite ? 'fill-current text-red-500' : 'text-gray-400'}`} />
+                            </button>
+                            
+                            <button
+                              onClick={() => handleEditItem(item.id)}
+                              className="p-1 hover:bg-gray-100 rounded"
+                              title="編集"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                            
+                            <button
+                              onClick={() => handleDeleteItem(item.id)}
+                              className="p-1 hover:bg-gray-100 rounded text-red-500"
+                              title="削除"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
 
-        {filteredAndSortedItems.length === 0 && (
+        {filteredAndSortedItems.length === 0 && !isLoading && (
           <div className="text-center py-12">
             <Film className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <p className="text-gray-500 text-lg">作品が見つかりません</p>
@@ -1020,6 +1205,38 @@ function App() {
                           {genre}
                         </span>
                       ))}
+                    </div>
+                  )}
+                  
+                  {selectedItem.cast && selectedItem.cast.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-sm text-gray-600 mb-2">出演者</div>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedItem.cast.map((actor, index) => (
+                          <div key={index} className="flex items-center gap-2 bg-gray-50 rounded-lg p-2 text-xs">
+                            {actor.profile_path ? (
+                              <img
+                                src={`https://image.tmdb.org/t/p/w45${actor.profile_path}`}
+                                alt={actor.name}
+                                className="w-8 h-8 rounded-full object-cover"
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                  e.target.nextSibling.style.display = 'flex';
+                                }}
+                              />
+                            ) : null}
+                            <div className={`w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center text-gray-600 text-xs ${actor.profile_path ? 'hidden' : 'flex'}`}>
+                              {actor.name.charAt(0)}
+                            </div>
+                            <div>
+                              <div className="font-medium text-gray-800">{actor.name}</div>
+                              {actor.character && (
+                                <div className="text-gray-500">({actor.character})</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                   
